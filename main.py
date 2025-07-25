@@ -23,16 +23,19 @@ def generate_range_table():
 
     while current <= MAX_DIFF:
 
-        for _ in range(16):
+        for i in range(16):
 
             # start of the range for the entry
             start = current
 
             # getting the value for the end of the range for this entry.
-            end = min(start + range_size - 1, MAX_DIFF)
+            end = min((start + range_size - 1), MAX_DIFF)
 
             current_entry_size = end - start + 1
 
+            # initialize num_bits variable before going into conditionals
+            num_bits = 0
+            
             if range_size <= current_entry_size:
                 # normal case, we can create a full size entry for the table.
 
