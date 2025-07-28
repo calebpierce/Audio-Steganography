@@ -37,6 +37,9 @@ factor would be a user input
 
 --- "Audacity" is a free program and great for working with audio file
 
+## What you Need
+- Python 3
+    - scipy package https://scipy.org/install/#installing-with-pip 
 
 ## TODO:
 - Range Table Generation (Sort of done, but may need a bit more testing)
