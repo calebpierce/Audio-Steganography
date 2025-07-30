@@ -1,11 +1,11 @@
 from scipy.io import wavfile
 from numpy import empty
-from numpy import ndarray, append, array
+from numpy import ndarray, append, array, int16, seterr
 import math
 import time
 
-
-
+# seterr(all='raise')
+HEADER_SIZE = 32
 # ------ Range Table Functions ------ #
 # we can control how fast the ranges grow with a cmd parameter. This can show a capacity vs stealth tradeoff.
 # for now, hardcoded.
@@ -22,7 +22,7 @@ def generate_range_table():
     range_size = 4
     remaining_size = 0
 
-    range_table.append({'start': 0, 'end': 0, 'num_bits': 0})
+    range_table.append({'start': 0, 'end': 0, 'num_bits': 0, 'bits': ''})
 
     for bit in range(1, 16):
 
@@ -47,7 +47,7 @@ def generate_range_table():
         # if we didn't break out in the previous condition, then we still have room to create a table entry, just with a smaller bit size.
         if range_too_large:
             remaining_size = MAX_DIFF - current
-            print(f"remaining size: {remaining_size}")
+
             if remaining_size > 0:
                 hidable_bits = math.floor(math.log2(remaining_size))
                 range_size = 2**hidable_bits
@@ -82,10 +82,6 @@ def generate_bit_sequences(range_table):
         counters[num_bits] += 1
         
     return range_table
-
-# encoding lookup functions
-    # get number of bits for the calculated difference, create lookup function used for encoding. 
-    # get the target range we need to hide in based on the message bit sequence
 
 
 def get_num_bits(difference: int, range_table: list) -> int:
@@ -126,7 +122,7 @@ def get_bit_sequence(difference: int, range_table: list) -> str:
             return entry['bits']
         
     print(f'bit sequence not found for difference value {difference}')
-    return None
+    return ''
 
 # ------ Reading and Writing Functions ------ #
 def read_wav(sample: str) -> ndarray:
@@ -137,7 +133,7 @@ def read_wav(sample: str) -> ndarray:
     # 2d array, each row is one sample. the first column has values from the left channel, the second column from the right channel.
     samplerate, data = wavfile.read(sample)
 
-    print(data.shape[0] / samplerate)
+    # print(data.shape[0] / samplerate)
 
 
     # this doesn't really matter right now. mostly for testing.
@@ -158,7 +154,8 @@ def write_wav(wav_file_data: ndarray, samplerate: int) -> None:
 # ------ Helpers ------ #
 def convert_message_to_bit_stream(hidden_message_file):
     with open(hidden_message_file, 'rb') as file:
-        return "".join(f"{byte:08b}" for byte in file.read())
+        secret_message = file.read()
+        return len(secret_message), "".join(f"{byte:08b}" for byte in secret_message)
 
 
 # ------ Encoder ------ #
@@ -177,8 +174,13 @@ def hide(message, audio_cover, range_table):
 
     The modified channel should now create the difference that maps to the bit sequence we are hiding.
     """
-    message_bit_stream = convert_message_to_bit_stream(hidden_message_file=message)
-    print(message_bit_stream)
+    file_size_in_bytes, message_bit_stream = convert_message_to_bit_stream(hidden_message_file=message)
+
+    # get file size in bytes for the decoder
+    header_bits = f'{file_size_in_bytes:0{int(HEADER_SIZE)}b}'
+
+    # add the header with the message size to the beginning of the message.
+    message_bit_stream = header_bits + message_bit_stream
         
 
     data, sample_rate = read_wav(audio_cover)
@@ -189,12 +191,12 @@ def hide(message, audio_cover, range_table):
         right = sample[1]
 
         # get difference
-        diff: int = left - right
+        diff = left - right
 
         # get bits to hide using a range table helper function
         bits_to_hide = get_num_bits(difference=abs(diff), range_table=range_table)
 
-        if bits_to_hide:
+        if bits_to_hide != 0:
 
             # if there is no more message to hide, then stop.
             if message_bit_stream == '':
@@ -203,41 +205,77 @@ def hide(message, audio_cover, range_table):
             
             # update the bits if the message length is shorter than what we calculated. This may happen towards the end of the process.
             if len(message_bit_stream) < bits_to_hide:
-                bits_to_hide = len(message_bit_stream)
+                last_bits = message_bit_stream
+                msg_chunk = last_bits.ljust(bits_to_hide, '0')
+            else:
+                msg_chunk = message_bit_stream[:bits_to_hide]
+
 
             # encode the message
-            msg_chunk = message_bit_stream[:bits_to_hide]
             new_start, new_end = get_target_range(bit_sequence=msg_chunk, num_bits=bits_to_hide, range_table=range_table)
 
             # find target range to hide our message
-            target_range_list = [abs(diff.item()), new_start, new_end]
+            target_range_list = [abs(diff), new_start, new_end]
             target_range_list.sort()
 
             # get value that is numerically closest to the original difference.
             closest_to_original = target_range_list[1]
 
             # get modification value. 
-            modification = abs(diff.item()) - closest_to_original
+            modification = right + (diff - closest_to_original)
 
             # update the right audio channel
-            steg_data[i,1] = right.item() - modification
-            print(steg_data[i])
-        
+            steg_data[i,1] = modification
+
+            # remove the bits we just encoded from the message bit stream
             message_bit_stream = message_bit_stream.replace(msg_chunk, '', count=1)
 
+        steg_data.astype(int16)
     # write the result
     write_wav(wav_file_data=steg_data, samplerate=sample_rate)
 
     print("Done")
 
 # ------ Decoder ------ #
-def extract():
-    pass
+def extract(steg_wav, range_table):
+    """
+    - open up a steg audio file.
+    - get header to get message size (know when to stop)
+    - reconstruct the message
+    - write out the message
+    """
 
-# testing stuff, can delete later.
-# uncomment to read a sample and immediately write it back. It should be the exact same sample. You'll need to change the filename.
-# wav_file_data, samplerate = read_wav('Swear_Sample.wav')
-# write_wav(wav_file_data=wav_file_data, samplerate=samplerate)
+    decoded_message = ''
+    message_size = None
+
+    data, _ = read_wav(steg_wav)
+    for i, sample in enumerate(data):
+        if len(decoded_message) == HEADER_SIZE:
+            message_size = int(decoded_message, 2)
+
+        if message_size != None and (len(decoded_message) >= ((message_size * 8) + HEADER_SIZE)):
+            break
+
+        left = sample[0]
+        right = sample[1]
+        diff = left - right
+
+        if diff == 0:
+            continue
+
+        bits = get_bit_sequence(difference=abs(diff), range_table=range_table)
+        decoded_message += bits
+
+    
+    # remove header from decoded message:
+    decoded_message = decoded_message.replace(decoded_message[:HEADER_SIZE], '', count=1)
+    # print(len(decoded_message))
+
+    with open('hidden_message', 'wb') as file:
+         # Write the bytes to create the new file
+        final_bits = decoded_message[:message_size * 8]
+        byte_values = bytes([int(final_bits[i:i+8], 2) for i in range(0, len(final_bits), 8)])
+        file.write(byte_values)
 
 # ------ Main Program------ #
 
@@ -245,14 +283,13 @@ table = generate_range_table()
 full_range_table = generate_bit_sequences(range_table=table)
 
 # check some of the data in the range table (for debugging only)
-for entry in full_range_table:
-    print(entry)
-
-# works, but need to test the bounds.
-n = get_num_bits(65495, full_range_table)
-# print(f"getting target range for {n} bits")
-# print(f'target range: {get_target_range('11000', int(n), full_range_table)}')
+# for entry in full_range_table:
+#     print(entry)
 
 
-# encoder testing
-hide(message='hello.txt', audio_cover='Three Evils (Embodied in Love and Shadow)_Sample.wav', range_table=full_range_table)
+# encode/decode testing.
+# hide(message='hello.txt', audio_cover='Three Evils (Embodied in Love and Shadow)_Sample.wav', range_table=full_range_table)
+# hide(message='hello.txt', audio_cover='Mozart_Sample.wav', range_table=full_range_table)
+hide(message='hello.txt', audio_cover='Swear_Sample.wav', range_table=full_range_table)
+time.sleep(3)
+extract(steg_wav='output.wav', range_table=full_range_table)
