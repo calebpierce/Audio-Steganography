@@ -1,6 +1,8 @@
 from scipy.io import wavfile
-from numpy import ndarray
+from numpy import empty
+from numpy import ndarray, append, array
 import math
+import time
 
 
 
@@ -177,22 +179,56 @@ def hide(message, audio_cover, range_table):
     """
     message_bit_stream = convert_message_to_bit_stream(hidden_message_file=message)
     print(message_bit_stream)
+        
 
     data, sample_rate = read_wav(audio_cover)
-    print(f"sample rate: {sample_rate}")
+    steg_data = data.copy()
 
-    for sample in data:
+    for i, sample in enumerate(data):
         left = sample[0]
         right = sample[1]
 
-        diff = left - right
-        # print(f"diff: {diff}")
+        # get difference
+        diff: int = left - right
+
+        # get bits to hide using a range table helper function
         bits_to_hide = get_num_bits(difference=abs(diff), range_table=range_table)
+
         if bits_to_hide:
-            pass
-            # print(f"bits to hide: {bits_to_hide}")
 
+            # if there is no more message to hide, then stop.
+            if message_bit_stream == '':
+                print("message fully hidden, exiting.")
+                break
+            
+            # update the bits if the message length is shorter than what we calculated. This may happen towards the end of the process.
+            if len(message_bit_stream) < bits_to_hide:
+                bits_to_hide = len(message_bit_stream)
 
+            # encode the message
+            msg_chunk = message_bit_stream[:bits_to_hide]
+            new_start, new_end = get_target_range(bit_sequence=msg_chunk, num_bits=bits_to_hide, range_table=range_table)
+
+            # find target range to hide our message
+            target_range_list = [abs(diff.item()), new_start, new_end]
+            target_range_list.sort()
+
+            # get value that is numerically closest to the original difference.
+            closest_to_original = target_range_list[1]
+
+            # get modification value. 
+            modification = abs(diff.item()) - closest_to_original
+
+            # update the right audio channel
+            steg_data[i,1] = right.item() - modification
+            print(steg_data[i])
+        
+            message_bit_stream = message_bit_stream.replace(msg_chunk, '', count=1)
+
+    # write the result
+    write_wav(wav_file_data=steg_data, samplerate=sample_rate)
+
+    print("Done")
 
 # ------ Decoder ------ #
 def extract():
@@ -214,8 +250,8 @@ for entry in full_range_table:
 
 # works, but need to test the bounds.
 n = get_num_bits(65495, full_range_table)
-print(f"getting target range for {n} bits")
-print(f'target range: {get_target_range('11000', int(n), full_range_table)}')
+# print(f"getting target range for {n} bits")
+# print(f'target range: {get_target_range('11000', int(n), full_range_table)}')
 
 
 # encoder testing
