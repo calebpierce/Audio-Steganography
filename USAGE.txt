@@ -1,0 +1,29 @@
+Audio Steganography - Usage Guide
+=======================================
+
+Requirements:
+-------------
+- Python 3.x
+- Install dependencies:
+  pip install numpy scipy
+
+Hide a Message:
+---------------
+python main.py -hide -m <message.txt> -c <cover.wav> [-o <output.wav>]
+
+Example:
+python main.py -hide -m hello.txt -c Swear_Sample.wav -o steg.wav
+
+Extract a Message:
+------------------
+python main.py -extract -s <stego.wav> [-o <output.txt>]
+
+Example:
+python main.py -extract -s steg.wav -o recovered.txt
+
+Notes:
+------
+- Only works with stereo .wav files
+- Default output names:
+  - Stego audio: output.wav
+  - Extracted message: hidden_message
