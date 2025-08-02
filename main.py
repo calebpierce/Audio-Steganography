@@ -1,3 +1,9 @@
+"""
+
+Members: Donovan Olivarez, Caleb Pierce, Sarah Rodriguez
+
+"""
+
 import argparse
 import sys
 import os
