@@ -14,21 +14,20 @@ from numpy import ndarray, int16
 
 # ------ Config ------ #
 HEADER_SIZE = 32
-
+MAX_DIFF = 65535
 
 # ------ Range Table Functions ------ #
-# We can control how fast the ranges grow with a cmd parameter. This can show a capacity vs stealth tradeoff.
-# For now, it's hardcoded.
 def generate_range_table():
     """
-    Generate a range table. No input is needed yet.
+    Generate a range table.
+    This is used to determine how many bits to hide and what bit strings we hide.
     """
     range_table = []
     MAX_DIFF = 65535
     current = 1
     range_too_large = False
 
-    # Can this be an arg? 
+    # starting values for the range.
     range_size = 4
     remaining_size = 0
 
@@ -98,7 +97,7 @@ def get_num_bits(difference: int, range_table: list) -> int:
     for entry in range_table:
         if entry['start'] <= difference <= entry['end']:
             return entry['num_bits']
-    print('difference not defined in range table, skipping.')
+    print('difference not defined in range table, skipping sample.')
     return None
 
 
@@ -106,13 +105,12 @@ def get_target_range(bit_sequence: str, num_bits: int, range_table: list) -> tup
     """
     Get the target range that we will hide the message in using the 
     bit sequence and the number of bits we can use for hiding.
-    Might be able to reduce this to just use the bit sequence param.
     """
     for entry in range_table:
         if num_bits == entry['num_bits'] and bit_sequence == entry['bits']:
             return (entry['start'], entry['end'])
 
-    print('target range not found')
+    print('target range not found, skipping sample')
     return None
 
 
@@ -129,21 +127,30 @@ def get_bit_sequence(difference: int, range_table: list) -> str:
 # ------ Reading and Writing Functions ------ #
 def read_wav(sample: str) -> ndarray:
     """
-    Read a wav file. Should also add some validation here to make sure we are using the right cover files.
+    Read a wav file. If a WAV file is not specified for the cover,
+    the program will exit.
     """
-    samplerate, data = wavfile.read(sample)
-    return data, samplerate
+    try:
+        samplerate, data = wavfile.read(sample)
+        return data, samplerate
+    except ValueError:
+        print('Incorrect file type. Must use a WAV file as a cover.')
+        sys.exit(1)
 
 
 def write_wav(wav_file_data: ndarray, samplerate: int, filename='output.wav') -> None:
     """
-    Writes the final output. It's unclear if this needs to be a separate method yet.
+    Writes the final output.
     """
     wavfile.write(filename=filename, rate=samplerate, data=wav_file_data)
 
 
 # ------ Helpers ------ #
 def convert_message_to_bit_stream(hidden_message_file):
+    """
+    Reads in the message to hide, converts it to a string of bits.
+    This is what the hide function uses when embedding the message.
+    """
     with open(hidden_message_file, 'rb') as file:
         secret_message = file.read()
         return len(secret_message), "".join(f"{byte:08b}" for byte in secret_message)
@@ -154,15 +161,18 @@ def hide(message, audio_cover, range_table, output='output.wav'):
     """
     - Convert message to bit stream
     - Read audio file
-    - Get difference between left and right channel
-    - Use difference to find # of bits to hide
-    - Get # of bits from the message bit stream
-    - Use bit sequence to find the new target range
+    - Get the difference between left and right channel
+    - Use the difference to find # of bits to hide
+    - Get # of bits from the message bit stream using python slicing
+    - Use bit sequence to find the new target range in the range table.
     - Find the range value closest to our original difference
     - Find the modification value using the original diff and the new closest range value
     - Modify the right audio channel by the modification value to get our target difference
+
     The modified channel should now create the difference that maps to the bit sequence we are hiding.
     """
+
+    # add a header with the size of the message.
     file_size_in_bytes, message_bit_stream = convert_message_to_bit_stream(hidden_message_file=message)
     header_bits = f'{file_size_in_bytes:0{int(HEADER_SIZE)}b}'
     message_bit_stream = header_bits + message_bit_stream
@@ -174,20 +184,27 @@ def hide(message, audio_cover, range_table, output='output.wav'):
         left = sample[0]
         right = sample[1]
         diff = left - right
+        current_msg_len = len(message_bit_stream)
 
         bits_to_hide = get_num_bits(difference=abs(diff), range_table=range_table)
         if bits_to_hide and bits_to_hide != 0:
-            if message_bit_stream == '':
+            if current_msg_len <= 0:
                 print("Message fully hidden.")
                 break
 
-            if len(message_bit_stream) < bits_to_hide:
+            # check to see if we have enough bits in the message bit stream to cover what the 
+            # algorithm has chosen.
+            if current_msg_len < bits_to_hide:
                 msg_chunk = message_bit_stream.ljust(bits_to_hide, '0')
             else:
                 msg_chunk = message_bit_stream[:bits_to_hide]
 
+            target_range = get_target_range(bit_sequence=msg_chunk, num_bits=bits_to_hide, range_table=range_table)
+            if target_range == None:
+                continue
+
             # Encode the message
-            new_start, new_end = get_target_range(bit_sequence=msg_chunk, num_bits=bits_to_hide, range_table=range_table)
+            new_start, new_end = target_range
 
             # Find target range to hide our message
             target_range_list = [abs(diff), new_start, new_end]
@@ -203,9 +220,14 @@ def hide(message, audio_cover, range_table, output='output.wav'):
             steg_data[i, 1] = modification
 
             # Remove the bits we just encoded from the message bit stream
-            message_bit_stream = message_bit_stream.replace(msg_chunk, '', 1)
+            message_bit_stream = message_bit_stream[bits_to_hide:]
 
-        steg_data.astype(int16)
+    # if we are done going through samples but still have bits left in our message, we did not hide the full message.
+    if len(message_bit_stream) > 0:
+        print("Message not fully hidden.")
+
+
+    steg_data.astype(int16)
 
     # Write the result
     write_wav(wav_file_data=steg_data, samplerate=sample_rate, filename=output)
@@ -225,12 +247,17 @@ def extract(steg_wav, range_table, output='hidden_message'):
     data, _ = read_wav(steg_wav)
 
     for i, sample in enumerate(data):
+        # checks to see if we have enough bits for the header.
+        # if so, we know how large our actual message is.
         if len(decoded_message) == HEADER_SIZE:
             message_size = int(decoded_message, 2)
 
+        # Check if decoded message is the size of our message plus the header.
+        # If we read in all the data needed for the message, we can stop here.
         if message_size is not None and (len(decoded_message) >= ((message_size * 8) + HEADER_SIZE)):
             break
 
+        # decode by getting the difference.
         left = sample[0]
         right = sample[1]
         diff = left - right
@@ -244,6 +271,7 @@ def extract(steg_wav, range_table, output='hidden_message'):
     # Remove header from decoded message
     decoded_message = decoded_message[HEADER_SIZE:]
 
+    # get our decoded bit string to a bytes object, then write the output.
     final_bits = decoded_message[:message_size * 8]
     byte_values = bytes([int(final_bits[i:i+8], 2) for i in range(0, len(final_bits), 8)])
 
