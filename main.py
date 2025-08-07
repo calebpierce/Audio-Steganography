@@ -1,7 +1,5 @@
 """
-
 Members: Donovan Olivarez, Caleb Pierce, Sarah Rodriguez
-
 """
 
 import argparse
@@ -10,7 +8,6 @@ import os
 import math
 from scipy.io import wavfile
 from numpy import ndarray, int16
-
 
 # ------ Config ------ #
 HEADER_SIZE = 32
@@ -23,18 +20,16 @@ def generate_range_table():
     This is used to determine how many bits to hide and what bit strings we hide.
     """
     range_table = []
-    MAX_DIFF = 65535
     current = 1
     range_too_large = False
-
-    # starting values for the range.
     range_size = 4
     remaining_size = 0
 
+    # Initial entry: zero-diff range that hides 0 bits
     range_table.append({'start': 0, 'end': 0, 'num_bits': 0, 'bits': ''})
 
     for bit in range(1, 16):
-        # Get total number of ranges to create
+        # Get total number of ranges to create for current bit size
         range_size = 2**bit
 
         # Create ranges
@@ -43,16 +38,13 @@ def generate_range_table():
                 range_too_large = True
                 break
 
-            # If we have room, create the table entry as normal
             end = current + range_size - 1
             range_table.append({'start': current, 'end': end, 'num_bits': bit})
             current = end + 1
 
-        # We are actually done, so break out of the outer loop
         if current > MAX_DIFF:
             break
 
-        # If we didn't break out in the previous condition, then we still have room to create a table entry, just with a smaller bit size.
         if range_too_large:
             remaining_size = MAX_DIFF - current
             if remaining_size > 0:
@@ -66,25 +58,21 @@ def generate_range_table():
 
 
 def generate_bit_sequences(range_table):
+    """
+    Assigns a unique binary string to each range based on its bit capacity.
+    """
     counters = {}
-
     for entry in range_table:
         num_bits = entry['num_bits']
         if num_bits == 0:
             continue
 
-        # If we see this bit length for the first time, initialize its counter
         if num_bits not in counters:
             counters[num_bits] = 0
 
-        # Get the current ID and format it as a binary string with leading zeros
         current_id = counters[num_bits]
         bit_string = f'{current_id:0{int(num_bits)}b}'
-
-        # Assign the bit string to the table entry
         entry['bits'] = bit_string
-
-        # Increment the counter for the next range of this size
         counters[num_bits] += 1
 
     return range_table
@@ -156,6 +144,34 @@ def convert_message_to_bit_stream(hidden_message_file):
         return len(secret_message), "".join(f"{byte:08b}" for byte in secret_message)
 
 
+def calculate_capacity(wav_path, range_table):
+    """
+    Calculates the total embeddable capacity of the cover WAV file
+    by summing up the number of bits we could hide at each stereo sample.
+    """
+    data, _ = read_wav(wav_path)
+    total_bits = 0
+
+    for sample in data:
+        left = sample[0]
+        right = sample[1]
+        diff = abs(left - right)
+
+        num_bits = get_num_bits(diff, range_table)
+        if num_bits:
+            total_bits += num_bits
+
+    usable_bits = total_bits - HEADER_SIZE
+    usable_bytes = usable_bits // 8
+
+    print(f"\n[Capacity Analysis for {wav_path}]")
+    print(f"Total embeddable bits:        {total_bits}")
+    print(f"Usable bits (after header):   {usable_bits}")
+    print(f"Usable capacity:              {usable_bytes} bytes\n")
+
+    return total_bits, usable_bytes
+
+
 # ------ Encoder ------ #
 def hide(message, audio_cover, range_table, output='output.wav'):
     """
@@ -200,7 +216,7 @@ def hide(message, audio_cover, range_table, output='output.wav'):
                 msg_chunk = message_bit_stream[:bits_to_hide]
 
             target_range = get_target_range(bit_sequence=msg_chunk, num_bits=bits_to_hide, range_table=range_table)
-            if target_range == None:
+            if target_range is None:
                 continue
 
             # Encode the message
@@ -225,7 +241,6 @@ def hide(message, audio_cover, range_table, output='output.wav'):
     # if we are done going through samples but still have bits left in our message, we did not hide the full message.
     if len(message_bit_stream) > 0:
         print("Message not fully hidden.")
-
 
     steg_data.astype(int16)
 
@@ -287,6 +302,7 @@ def main():
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument('-hide', action='store_true', help='Hide a message in the audio file')
     mode_group.add_argument('-extract', action='store_true', help='Extract a message from the audio file')
+    mode_group.add_argument('-capacity', action='store_true', help='Calculate embedding capacity of the cover')
 
     # Hide mode
     parser.add_argument('-m', type=str, help='Message file to hide')
@@ -315,6 +331,12 @@ def main():
             sys.exit(1)
         output_file = args.o if args.o else "hidden_message"
         extract(steg_wav=args.s, range_table=full_range_table, output=output_file)
+
+    elif args.capacity:
+        if not args.c:
+            print("Error: -c <cover file> is required for capacity calculation.")
+            sys.exit(1)
+        calculate_capacity(wav_path=args.c, range_table=full_range_table)
 
 
 if __name__ == '__main__':
